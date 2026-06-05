@@ -16,7 +16,7 @@ from app.config import config
 logger = logging.getLogger(__name__)
 
 BASE_URL = config.max_api_base
-TOKEN = config.max_token
+TOKEN = config.max_bot_token
 
 
 def _headers() -> dict[str, str]:

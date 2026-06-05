@@ -1,43 +1,38 @@
-import os
-from dataclasses import dataclass, field
+"""Application configuration loaded from environment variables via pydantic-settings."""
+
+from __future__ import annotations
+
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-load_dotenv()
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-@dataclass(frozen=True)
-class Config:
+class Config(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
     # MAX API
-    max_token: str = field(default_factory=lambda: os.environ["MAX_BOT_TOKEN"])
+    max_bot_token: str = ""
     max_api_base: str = "https://platform-api.max.ru"
 
     # Webhook
-    webhook_url: str = field(
-        default_factory=lambda: os.environ.get(
-            "WEBHOOK_URL", "https://your-domain.com/webhook"
-        )
-    )
-    webhook_secret: str = field(
-        default_factory=lambda: os.environ.get("WEBHOOK_SECRET", "")
-    )
+    webhook_url: str = "https://your-domain.com/webhook"
+    webhook_secret: str = ""
 
     # Database
-    database_url: str = field(
-        default_factory=lambda: os.environ.get(
-            "DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/school_pulse_bot"
-        )
+    database_url: str = (
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/school_pulse_bot"
     )
 
     # Server
-    host: str = field(default_factory=lambda: os.environ.get("HOST", "0.0.0.0"))
-    port: int = field(
-        default_factory=lambda: int(os.environ.get("PORT", "8000"))
-    )
+    host: str = "0.0.0.0"
+    port: int = 8000
 
     # Logging
-    log_level: str = field(default_factory=lambda: os.environ.get("LOG_LEVEL", "INFO"))
+    log_level: str = "INFO"
 
 
 config = Config()

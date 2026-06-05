@@ -1,104 +1,114 @@
-# SchoolPulse Bot
+# SchoolPulse Bot (Импульс школы)
 
-Чат-бот для платформы MAX (VK Group) для управления школьными мероприятиями и уведомлениями.
+**SchoolPulse Bot** — чат-бот для платформы **MAX** (VK Group), который автоматизирует управление школьными мероприятиями и уведомлениями. Бот позволяет представителям школ получать актуальные уведомления о событиях, организаторам — создавать и публиковать анонсы, а администраторам — модерировать пользователей.
 
-## Архитектура
+Проект написан на **Python 3.11** + **FastAPI** + **PostgreSQL** (asyncpg + SQLAlchemy 2.0 asyncio) и предназначен для развёртывания через Docker.
+
+---
+
+## Роли
+
+| Роль | Описание | Основные возможности |
+|------|----------|---------------------|
+| **Представитель школы** (`School_Representative`) | Регистрируется, получает уведомления, ставит отметки о прочтении | Просмотр списка мероприятий, настройка уведомлений |
+| **Организатор** (`Organizer`) | Создаёт и редактирует посты о мероприятиях | Управление событиями, просмотр аналитики |
+| **Администратор** (`Admin`) | Модерирует пользователей, верифицирует роли | Управление ролями, блокировка, верификация |
+
+---
+
+## Структура проекта
 
 ```
 SchoolPulseBot/
 ├── app/
-│   ├── __init__.py
 │   ├── main.py              # Точка входа FastAPI / Long Polling
-│   ├── config.py            # Конфигурация из переменных окружения
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── user.py          # User, SchoolRepresentative, Organizer, Admin
-│   │   ├── event.py         # Event
-│   │   └── notification.py  # Notification, ReadReceipt
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── max_api.py       # MAX API Client (send, subscribe, etc.)
-│   │   ├── auth.py          # Разрешение и управление ролями
-│   │   └── webhook.py       # Управление подписками вебхуков
-│   └── routers/
-│       ├── __init__.py
-│       └── webhook.py       # POST /webhook — приём событий
+│   ├── config.py            # Конфигурация (pydantic-settings)
+│   ├── models/              # SQLAlchemy модели
+│   │   ├── user.py
+│   │   ├── event.py
+│   │   └── notification.py
+│   ├── routers/
+│   │   └── webhook.py       # POST /webhook — приём событий от MAX
+│   └── services/
+│       ├── max_api.py       # MAX API Client
+│       ├── auth.py          # Авторизация и роли
+│       ├── webhook.py       # Управление подписками
+│       └── ...
 ├── db/
-│   ├── __init__.py
 │   └── database.py          # Async SQLAlchemy engine + session
-├── .env.example
+├── Dockerfile               # Многостадийная сборка образа
+├── docker-compose.yml       # app + PostgreSQL
+├── .env.example             # Шаблон переменных окружения
 ├── requirements.txt
 └── README.md
 ```
 
-## Роли
+---
 
-| Роль | Описание | Права |
-|------|----------|-------|
-| **School_Representative** | Регистрация, получение уведомлений, отметки о прочтении | Чтение уведомлений о мероприятиях |
-| **Organizer** | Создание/редактирование постов, аналитика | Управление мероприятиями, просмотр статистики |
-| **Admin** | Модерация аккаунтов, верификация ролей | Управление пользователями, верификация |
+## Быстрый старт (Docker)
 
-## База данных (PostgreSQL)
-
-```
-users
-├── max_id (PK) — ID пользователя MAX
-├── username
-├── role (enum: school_representative, organizer, admin)
-├── is_verified
-└── created_at / updated_at
-
-school_representatives  → FK(users.max_id) — расширенный профиль представителя
-    ├── school_name
-    ├── school_class
-    └── notification_preferences (JSON)
-
-organizers              → FK(users.max_id) — расширенный профиль организатора
-    ├── organization
-    └── created_events_count
-
-admins                  → FK(users.max_id) — расширенный профиль администратора
-    ├── can_verify
-    └── can_moderate
-
-events
-├── title, description
-├── organizer_id → FK(users.max_id)
-├── scheduled_at
-└── created_at
-
-notifications
-├── event_id → FK(events.id)
-├── text
-└── sent_at
-
-read_receipts
-├── user_id → FK(users.max_id)
-├── notification_id → FK(notifications.id)
-└── read_at
-```
-
-## Установка и запуск
+### 1. Клонирование
 
 ```bash
-# Клонировать
-git clone <repo>
+git clone https://github.com/EgorSetup/SchoolPulseBot.git
 cd SchoolPulseBot
+```
 
+### 2. Настройка окружения
+
+Скопируйте и отредактируйте `.env`:
+
+```bash
+cp .env.example .env
+```
+
+Минимально необходимые переменные:
+
+| Переменная | Значение по умолчанию | Обязательная |
+|-----------|----------------------|:------------:|
+| `MAX_BOT_TOKEN` | — | ✅ |
+| `DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5432/school_pulse_bot` | ❌ |
+| `WEBHOOK_URL` | `https://your-domain.com/webhook` | ❌ |
+| `WEBHOOK_SECRET` | — | ❌ |
+
+> В `docker-compose.yml` строка подключения к БД формируется автоматически из переменных `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` — их тоже можно переопределить в `.env`.
+
+### 3. Запуск
+
+```bash
+docker compose up -d
+```
+
+После запуска:
+
+- FastAPI приложение доступно на `http://localhost:8000`
+- Health check: `GET /health`
+- PostgreSQL слушает на порту `5432`
+
+### 4. Подписка на вебхук (один раз)
+
+```bash
+docker compose exec app python -m app.main --subscribe
+```
+
+---
+
+## Запуск без Docker (для разработки)
+
+```bash
 # Виртуальное окружение
 python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
 .venv\Scripts\activate     # Windows
+source .venv/bin/activate  # Linux / Mac
 
 # Зависимости
 pip install -r requirements.txt
 
 # Настроить .env
 cp .env.example .env
-# Отредактировать .env: MAX_BOT_TOKEN, DATABASE_URL и т.д.
+# Отредактировать MAX_BOT_TOKEN, DATABASE_URL и т.д.
 
-# Создать таблицы (один раз)
+# Создать таблицы
 python -c "
 import asyncio
 from db.database import engine
@@ -109,14 +119,17 @@ asyncio.run(Base.metadata.create_all(engine))
 # Запустить сервер (Webhook — production)
 python -m app.main
 
-# Или Long Polling (только для разработки)
+# Long Polling (только разработка)
 python -m app.main --long-polling
-
-# Подписаться на события вебхука
-python -m app.main --subscribe
 ```
 
-## API MAX (используемые методы)
+---
+
+## API
+
+Полная документация по API платформы MAX: **[https://dev.max.ru/docs-api](https://dev.max.ru/docs-api)**
+
+### Используемые методы MAX API
 
 | Метод | URL | Назначение |
 |-------|-----|-----------|
@@ -127,18 +140,42 @@ python -m app.main --subscribe
 | `POST /answers` | Ответ на callback | Обработка нажатий кнопок |
 | `GET /updates` | Long Polling | Dev-режим |
 
-## Webhook события
+### Webhook события
 
 - `bot_started` — пользователь запустил бота
-- `bot_added` — бот добавлен в чат/канал
+- `bot_added` — бот добавлен в чат / канал
 - `message_created` — новое сообщение
 - `message_callback` — нажатие на inline-кнопку
-- `message_edited` / `message_removed` — редактирование/удаление
+- `message_edited` / `message_removed` — редактирование / удаление
 - `dialog_removed` / `bot_stopped` — остановка бота
+
+---
+
+## Переменные окружения
+
+| Переменная | По умолчанию | Описание |
+|-----------|-------------|----------|
+| `MAX_BOT_TOKEN` | — | Токен бота MAX (обязательный) |
+| `MAX_API_BASE` | `https://platform-api.max.ru` | Базовый URL MAX API |
+| `WEBHOOK_URL` | `https://your-domain.com/webhook` | Публичный URL для вебхука |
+| `WEBHOOK_SECRET` | — | Секрет для верификации вебхуков |
+| `DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5432/school_pulse_bot` | Строка подключения к БД |
+| `HOST` | `0.0.0.0` | Хост для сервера |
+| `PORT` | `8000` | Порт для сервера |
+| `LOG_LEVEL` | `INFO` | Уровень логирования |
+
+---
 
 ## Требования
 
 - Python 3.11+
 - PostgreSQL 15+
+- Docker & Docker Compose (для развёртывания)
 - MAX Bot Token (получить на [business.max.ru](https://business.max.ru/self))
 - HTTPS-сертификат для продакшн-вебхука
+
+---
+
+## Лицензия
+
+MIT
