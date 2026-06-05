@@ -49,6 +49,7 @@ from app.services.school_representative_service import (
 from app.services.event_service import (
     create_event,
     get_event_by_id,
+    get_event_with_notifications,
     get_events_by_school,
     get_organizer_events,
     get_organizer_profile,
@@ -317,9 +318,9 @@ async def _handle_org_event_dialog_step(
     state = _get_dialog_state(user)
 
     if state == STATE_NONE or state == "awaiting_event_title":
-        # Step 1: title received → ask for description
+        # Step 1: title received → save to DB field, ask for description
+        user.temp_event_title = text.strip()
         await _set_dialog_state(user, STATE_AWAITING_EVENT_DESCRIPTION, session)
-        setattr(user, "_event_title", text.strip())
 
         await send_message(
             "📝 *Введи описание события*\n\n"
@@ -329,13 +330,12 @@ async def _handle_org_event_dialog_step(
         )
 
     elif state == STATE_AWAITING_EVENT_DESCRIPTION:
-        # Step 2: description received → ask for date
-        await _set_dialog_state(user, STATE_AWAITING_EVENT_DATE, session)
+        # Step 2: description received → save to DB field, ask for date
         description = text.strip()
-        setattr(
-            user, "_event_description",
-            description if description not in ("—", "-", "") else None,
+        user.temp_event_description = (
+            description if description not in ("—", "-", "") else None
         )
+        await _set_dialog_state(user, STATE_AWAITING_EVENT_DATE, session)
 
         await send_message(
             "📅 *Введи дату события*\n\n"
@@ -349,8 +349,8 @@ async def _handle_org_event_dialog_step(
         # Step 3: date received → create event
         await _set_dialog_state(user, STATE_NONE, session)
 
-        title = getattr(user, "_event_title", "Без названия")
-        description = getattr(user, "_event_description", None)
+        title = user.temp_event_title or "Без названия"
+        description = user.temp_event_description
 
         # Parse date
         parsed_date = _parse_date(text.strip())
@@ -402,8 +402,9 @@ async def _handle_org_event_dialog_step(
                 format_="markdown",
             )
 
-            # Clean up temp state
+            # Commit event creation + clean up temp state
             _clean_event_state(user)
+            await session.commit()
 
         except Exception as exc:
             logger.exception("Failed to create event: %s", exc)
@@ -413,6 +414,7 @@ async def _handle_org_event_dialog_step(
             )
             await _set_dialog_state(user, STATE_NONE, session)
             _clean_event_state(user)
+            await session.commit()
 
     if callback_id:
         await answer_callback(callback_id)
@@ -431,10 +433,8 @@ def _parse_date(text: str) -> Optional[datetime]:
 
 def _clean_event_state(user: User) -> None:
     """Remove temporary event creation state from user object."""
-    if hasattr(user, "_event_title"):
-        delattr(user, "_event_title")
-    if hasattr(user, "_event_description"):
-        delattr(user, "_event_description")
+    user.temp_event_title = None
+    user.temp_event_description = None
 
 
 # ────────────────────────────────────────────────────
@@ -456,7 +456,7 @@ async def _handle_send_notification(
     3. Ask organizer to confirm with optional filters.
     4. Send broadcast.
     """
-    event = await get_event_by_id(session, event_id)
+    event = await get_event_with_notifications(session, event_id)
     if event is None:
         await send_message(
             "❌ *Событие не найдено.*",

@@ -41,6 +41,15 @@ class User(Base):
     )
     """Persistent dialog state for multi-step registration/event creation flows."""
 
+    temp_event_title: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, default=None,
+        comment="Temporary storage for event title during FSM wizard",
+    )
+    temp_event_description: Mapped[Optional[str]] = mapped_column(
+        String(1000), nullable=True, default=None,
+        comment="Temporary storage for event description during FSM wizard",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

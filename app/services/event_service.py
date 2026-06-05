@@ -11,6 +11,7 @@ from typing import Optional
 
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.models.event import Event, EventRegistration
 from app.models.user import Organizer, User
@@ -64,9 +65,24 @@ async def create_event(
 async def get_event_by_id(
     session: AsyncSession, event_id: int
 ) -> Optional[Event]:
-    """Fetch a single event by its ID."""
+    """Fetch a single event by its ID (lazy-loading relationships)."""
     result = await session.execute(select(Event).where(Event.id == event_id))
     return result.scalar_one_or_none()
+
+
+async def get_event_with_notifications(
+    session: AsyncSession, event_id: int
+) -> Optional[Event]:
+    """
+    Fetch a single event by its ID with eager-loaded notifications.
+    Prevents MissingGreenlet errors when accessing event.notifications.
+    """
+    result = await session.execute(
+        select(Event)
+        .options(joinedload(Event.notifications))
+        .where(Event.id == event_id)
+    )
+    return result.unique().scalar_one_or_none()
 
 
 async def get_organizer_events(
