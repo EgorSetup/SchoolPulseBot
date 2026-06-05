@@ -34,6 +34,13 @@ class User(Base):
         default=UserRole.school_representative,
     )
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    registration_state: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True, default=None,
+        comment="Current FSM state for multi-step dialogs (e.g. awaiting_school, awaiting_class)",
+    )
+    """Persistent dialog state for multi-step registration/event creation flows."""
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

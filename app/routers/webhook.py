@@ -31,6 +31,8 @@ from app.services.keyboard_service import (
     analytics_menu,
     broadcast_completed,
     event_actions,
+    event_detail_actions,
+    event_registration_list,
     main_menu,
     notification_ack_keyboard,
     notification_actions,
@@ -47,8 +49,11 @@ from app.services.school_representative_service import (
 from app.services.event_service import (
     create_event,
     get_event_by_id,
+    get_events_by_school,
     get_organizer_events,
     get_organizer_profile,
+    is_user_registered,
+    register_for_event,
 )
 from app.services.notification_service import (
     get_recipients,
@@ -81,11 +86,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhook", tags=["webhook"])
 
 # ────────────────────────────────────────────────────
-#  In-memory dialog state tracking
-#  (maps max_id -> state name, persisted per request)
+#  Dialog state tracking — persisted in DB
 # ────────────────────────────────────────────────────
-
-DIALOG_STATE_KEY = "_dialog_state"
 
 # Allowed dialog states
 STATE_NONE = ""
@@ -99,13 +101,15 @@ STATE_AWAITING_EVENT_DATE = "awaiting_event_date"
 
 
 def _get_dialog_state(user: User) -> str:
-    """Read dialog state stored on the user object."""
-    return getattr(user, DIALOG_STATE_KEY, STATE_NONE)
+    """Read dialog state from the DB-backed user.registration_state field."""
+    return user.registration_state or STATE_NONE
 
 
-def _set_dialog_state(user: User, state: str) -> None:
-    """Store dialog state temporarily on the user object."""
-    setattr(user, DIALOG_STATE_KEY, state)
+async def _set_dialog_state(user: User, state: str, session: AsyncSession) -> None:
+    """Persist dialog state to the DB and commit."""
+    user.registration_state = state if state else None
+    await session.flush()
+    await session.commit()
 
 
 # ────────────────────────────────────────────────────
@@ -215,7 +219,7 @@ async def _handle_school_dialog_step(
     state = _get_dialog_state(user)
 
     if state == STATE_NONE:
-        _set_dialog_state(user, STATE_AWAITING_SCHOOL)
+        await _set_dialog_state(user, STATE_AWAITING_SCHOOL, session)
         await send_message(
             "🏫 *Укажи название своей школы*\n\n"
             "Например: *МБОУ СОШ № 15*",
@@ -224,7 +228,7 @@ async def _handle_school_dialog_step(
         )
 
     elif state == STATE_AWAITING_SCHOOL:
-        _set_dialog_state(user, STATE_AWAITING_CLASS)
+        await _set_dialog_state(user, STATE_AWAITING_CLASS, session)
         await save_school(session, user.max_id, text)
         await send_message(
             f"✅ Школа *{text.strip()}* сохранена!\n\n"
@@ -240,7 +244,7 @@ async def _handle_school_dialog_step(
             class_value = ""
 
         await save_school_class(session, user.max_id, class_value)
-        _set_dialog_state(user, STATE_AWAITING_CONFIRM)
+        await _set_dialog_state(user, STATE_AWAITING_CONFIRM, session)
 
         profile = await get_school_profile(session, user.max_id)
         school_name = profile.school_name if profile else "?"
@@ -262,7 +266,7 @@ async def _handle_school_dialog_step(
 
 async def _finalize_school_registration(user: User, session: AsyncSession) -> None:
     """Finalize the school registration."""
-    _set_dialog_state(user, STATE_NONE)
+    await _set_dialog_state(user, STATE_NONE, session)
     user.is_verified = True
     await session.flush()
 
@@ -308,7 +312,7 @@ async def _handle_org_event_dialog_step(
 
     if state == STATE_NONE or state == "awaiting_event_title":
         # Step 1: title received → ask for description
-        _set_dialog_state(user, STATE_AWAITING_EVENT_DESCRIPTION)
+        await _set_dialog_state(user, STATE_AWAITING_EVENT_DESCRIPTION, session)
         setattr(user, "_event_title", text.strip())
 
         await send_message(
@@ -320,7 +324,7 @@ async def _handle_org_event_dialog_step(
 
     elif state == STATE_AWAITING_EVENT_DESCRIPTION:
         # Step 2: description received → ask for date
-        _set_dialog_state(user, STATE_AWAITING_EVENT_DATE)
+        await _set_dialog_state(user, STATE_AWAITING_EVENT_DATE, session)
         description = text.strip()
         setattr(
             user, "_event_description",
@@ -337,7 +341,7 @@ async def _handle_org_event_dialog_step(
 
     elif state == STATE_AWAITING_EVENT_DATE:
         # Step 3: date received → create event
-        _set_dialog_state(user, STATE_NONE)
+        await _set_dialog_state(user, STATE_NONE, session)
 
         title = getattr(user, "_event_title", "Без названия")
         description = getattr(user, "_event_description", None)
@@ -353,7 +357,7 @@ async def _handle_org_event_dialog_step(
                 format_="markdown",
             )
             # Re-ask
-            _set_dialog_state(user, STATE_AWAITING_EVENT_DATE)
+            await _set_dialog_state(user, STATE_AWAITING_EVENT_DATE, session)
             return
 
         # Validate date is in the future
@@ -367,12 +371,17 @@ async def _handle_org_event_dialog_step(
             return
 
         try:
+            # Determine organizer's school name for event
+            org_school = await get_school_profile(session, user.max_id)
+            school_name = org_school.school_name if org_school else None
+
             event = await create_event(
                 session,
                 organizer_id=user.max_id,
                 title=title,
                 description=description,
                 scheduled_at=parsed_date,
+                school_name=school_name,
             )
 
             date_str = parsed_date.strftime("%d.%m.%Y")
@@ -396,7 +405,7 @@ async def _handle_org_event_dialog_step(
                 "❌ *Ошибка при создании события.* Попробуй ещё раз.",
                 user_id=user.max_id,
             )
-            _set_dialog_state(user, STATE_NONE)
+            await _set_dialog_state(user, STATE_NONE, session)
             _clean_event_state(user)
 
     if callback_id:
@@ -802,6 +811,148 @@ async def _handle_ack(
 
 
 # ────────────────────────────────────────────────────
+#  Event registration handlers (SchoolRepresentative)
+# ────────────────────────────────────────────────────
+
+
+async def _show_events_for_registration(
+    user: User,
+    session: AsyncSession,
+) -> None:
+    """
+    Show all future events available for the user's school.
+    If the user has no school profile set, prompt them to set it up.
+    """
+    # Get user's school info
+    profile = await get_school_profile(session, user.max_id)
+
+    if profile is None or not profile.school_name:
+        await send_message(
+            "🏫 *Чтобы увидеть события, сначала укажи свою школу в профиле.*\n\n"
+            "Нажми «👤 Профиль» → «Указать школу и класс».",
+            user_id=user.max_id,
+            attachments=main_menu(),
+            format_="markdown",
+        )
+        return
+
+    # Fetch events for this school
+    events = await get_events_by_school(session, profile.school_name, only_future=True)
+
+    if not events:
+        await send_message(
+            "📭 *Пока нет доступных событий для твоей школы.*\n\n"
+            "Когда появятся новые мероприятия, тебе придёт уведомление.",
+            user_id=user.max_id,
+            attachments=main_menu(),
+            format_="markdown",
+        )
+        return
+
+    # Build event list for keyboard
+    event_tuples: list[tuple[int, str, str]] = []
+    for ev in events:
+        date_str = ev.scheduled_at.strftime("%d.%m.%Y")
+        event_tuples.append((ev.id, ev.title, date_str))
+
+    await send_message(
+        f"📝 *Доступные события для твоей школы*\n\n"
+        f"Всего найдено: *{len(events)}*\n"
+        f"Выбери событие, чтобы узнать подробности:",
+        user_id=user.max_id,
+        attachments=event_registration_list(event_tuples),
+        format_="markdown",
+    )
+
+
+async def _show_event_detail(
+    user: User,
+    session: AsyncSession,
+    event_id: int,
+) -> None:
+    """Show detailed info about an event with a registration button."""
+    event = await get_event_by_id(session, event_id)
+    if event is None:
+        await send_message(
+            "❌ *Событие не найдено.*",
+            user_id=user.max_id,
+        )
+        return
+
+    # Check if user is already registered
+    already_registered = await is_user_registered(
+        session, user_id=user.max_id, event_id=event_id,
+    )
+
+    date_str = event.scheduled_at.strftime("%d.%m.%Y")
+    lines = [
+        f"📅 *{event.title}*\n",
+        f"📆 *Дата:* {date_str}",
+    ]
+    if event.description:
+        lines.append(f"\n📝 *Описание:*\n{event.description}")
+    if event.school_name:
+        lines.append(f"\n🏫 *Школа:* {event.school_name}")
+
+    await send_message(
+        "\n".join(lines),
+        user_id=user.max_id,
+        attachments=event_detail_actions(event_id, is_registered=already_registered),
+        format_="markdown",
+    )
+
+
+async def _confirm_registration(
+    user: User,
+    session: AsyncSession,
+    event_id: int,
+) -> None:
+    """Confirm a user's registration for an event."""
+    event = await get_event_by_id(session, event_id)
+    if event is None:
+        await send_message(
+            "❌ *Событие не найдено.*",
+            user_id=user.max_id,
+        )
+        return
+
+    try:
+        registration = await register_for_event(
+            session,
+            user_id=user.max_id,
+            event_id=event_id,
+        )
+        await session.commit()
+
+        await send_message(
+            f"✅ *Ты успешно записан!*\n\n"
+            f"📅 *{event.title}*\n"
+            f"📆 *Дата:* {event.scheduled_at.strftime('%d.%m.%Y')}\n\n"
+            f"Мы напомним тебе о событии ближе к дате.",
+            user_id=user.max_id,
+            format_="markdown",
+        )
+
+        logger.info(
+            "User %d registered for event %d (registration_id=%d)",
+            user.max_id, event_id, registration.id,
+        )
+
+    except ValueError:
+        # User already registered
+        await send_message(
+            "ℹ️ *Ты уже записан на это событие.*",
+            user_id=user.max_id,
+        )
+    except Exception as exc:
+        logger.exception("Failed to register user %d for event %d: %s", user.max_id, event_id, exc)
+        await send_message(
+            "❌ *Произошла ошибка при регистрации.* Попробуй ещё раз.",
+            user_id=user.max_id,
+        )
+
+
+# ────────────────────────────────────────────────────
 #  Update dispatcher
 # ────────────────────────────────────────────────────
 
@@ -891,7 +1042,7 @@ async def _handle_message_created(
         if not await require_admin(session, user.max_id):
             await send_message("⛔ Доступ запрещён.", user_id=user_id)
             return
-        _set_dialog_state(user, STATE_NONE)
+        await _set_dialog_state(user, STATE_NONE, session)
 
         if text.isdigit():
             target_max_id = int(text)
@@ -1252,7 +1403,7 @@ async def _handle_message_callback(
 
     # ── Organizer: Create event ──
     elif payload == "org_create_event":
-        _set_dialog_state(user, STATE_AWAITING_EVENT_TITLE)
+        await _set_dialog_state(user, STATE_AWAITING_EVENT_TITLE, session)
         await send_message(
             "📅 *Создание нового события*\n\n"
             "Введи *название* события:",
@@ -1313,20 +1464,42 @@ async def _handle_message_callback(
             "✅ Все уведомления отмечены как прочитанные.", user_id=user_id
         )
 
+    # ──────────────────────────────────────────────
+    #  Event registration for SchoolRepresentative
+    # ──────────────────────────────────────────────
+
     elif payload == "register_event":
-        await send_message(
-            "*📝 Регистрация на событие*\n\n"
-            "Функция будет доступна в ближайших обновлениях. "
-            "Следи за уведомлениями!",
-            user_id=user_id,
-            format_="markdown",
-        )
+        await _show_events_for_registration(user, session)
+
+    elif payload.startswith("ev_select:"):
+        event_id_str = payload.split(":", 1)[1]
+        try:
+            event_id = int(event_id_str)
+            await _show_event_detail(user, session, event_id)
+        except ValueError:
+            logger.warning("Invalid event_id in ev_select payload: %s", payload)
+
+    elif payload.startswith("ev_confirm:"):
+        event_id_str = payload.split(":", 1)[1]
+        try:
+            event_id = int(event_id_str)
+            await _confirm_registration(user, session, event_id)
+        except ValueError:
+            logger.warning("Invalid event_id in ev_confirm payload: %s", payload)
+
+    elif payload.startswith("ev_already:"):
+        event_id_str = payload.split(":", 1)[1]
+        try:
+            event_id = int(event_id_str)
+            await _show_event_detail(user, session, event_id)
+        except ValueError:
+            logger.warning("Invalid event_id in ev_already payload: %s", payload)
 
     elif payload == "profile":
         await _send_profile(user, session)
 
     elif payload == "set_school":
-        _set_dialog_state(user, STATE_AWAITING_SCHOOL)
+        await _set_dialog_state(user, STATE_AWAITING_SCHOOL, session)
         await send_message(
             "🏫 *Укажи название своей школы*\n\n"
             "Например: *МБОУ СОШ № 15*\n"
@@ -1418,7 +1591,7 @@ async def _handle_message_callback(
         if not await require_admin(session, user.max_id):
             await send_message("⛔ Доступ запрещён.", user_id=user_id)
             return
-        _set_dialog_state(user, "awaiting_admin_user_search")
+        await _set_dialog_state(user, "awaiting_admin_user_search", session)
         await send_message(
             "🔍 *Поиск пользователя*\n\n"
             "Введи ID пользователя (число) для поиска:",

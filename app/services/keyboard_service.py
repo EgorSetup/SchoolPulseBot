@@ -198,6 +198,51 @@ def analytics_menu() -> list[dict[str, Any]]:
 
 
 # ═══════════════════════════════════════════════════════
+#  Event registration keyboards (for SchoolRepresentative)
+# ═══════════════════════════════════════════════════════
+
+
+def event_registration_list(events: list[tuple[int, str, str]]) -> list[dict[str, Any]]:
+    """
+    Inline keyboard listing events available for registration.
+
+    Each button shows the event title and carries the event id in payload.
+
+    Args:
+        events: list of (event_id, title, date_str) tuples.
+    """
+    rows: list[list[dict[str, Any]]] = []
+    for event_id, title, date_str in events:
+        # Truncate long titles to fit on a button
+        display_title = title if len(title) <= 40 else title[:37] + "..."
+        rows.append([
+            _callback_button(
+                f"📅 {display_title} ({date_str})",
+                f"ev_select:{event_id}",
+            ),
+        ])
+    rows.append([_callback_button("🔙 Назад", "main_menu")])
+    return _inline_keyboard(rows)
+
+
+def event_detail_actions(event_id: int, is_registered: bool = False) -> list[dict[str, Any]]:
+    """
+    Keyboard shown after viewing event details.
+
+    Args:
+        event_id: the event ID.
+        is_registered: whether the user is already registered.
+    """
+    rows: list[list[dict[str, Any]]] = []
+    if is_registered:
+        rows.append([_callback_button("✅ Уже записан", f"ev_already:{event_id}")])
+    else:
+        rows.append([_callback_button("📝 Подтвердить участие", f"ev_confirm:{event_id}")])
+    rows.append([_callback_button("🔙 К списку событий", "register_event")])
+    return _inline_keyboard(rows)
+
+
+# ═══════════════════════════════════════════════════════
 #  Admin keyboards
 # ═══════════════════════════════════════════════════════
 
