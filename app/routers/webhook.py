@@ -80,6 +80,7 @@ from app.services.max_api import (
     answer_callback,
     verify_webhook_secret,
 )
+from app.config import config as app_config
 
 logger = logging.getLogger(__name__)
 
@@ -275,8 +276,13 @@ async def _finalize_school_registration(user: User, session: AsyncSession) -> No
     school_class = profile.school_class if profile and profile.school_class else "не указан"
 
     # Determine which menu to show
-    is_organizer = user.role == UserRole.organizer
-    menu = organizer_main_menu() if is_organizer else main_menu()
+    is_admin = user.role == UserRole.admin
+    if is_admin:
+        menu = admin_main_menu()
+    elif user.role == UserRole.organizer:
+        menu = organizer_main_menu()
+    else:
+        menu = main_menu()
 
     await send_message(
         f"🎉 *Регистрация завершена!*\n\n"
@@ -1018,6 +1024,22 @@ async def _handle_message_created(
     text = body.get("text", "").strip()
 
     user, _ = await resolve_user_role(session, user_id, username=sender.get("username"))
+
+    # ── Admin elevation via secret key ──
+    # Check BEFORE dialog states so the key works in any state
+    if app_config.admin_key and text.strip() == app_config.admin_key:
+        user.role = UserRole.admin
+        user.registration_state = None
+        await session.commit()
+        logger.info("User %d elevated to admin via secret key", user.max_id)
+        await send_message(
+            "🔓 *Права администратора получены!*\n\n"
+            "Теперь тебе доступны расширенные функции управления.\n"
+            "Напиши /start, чтобы обновить меню.",
+            user_id=user_id,
+            format_="markdown",
+        )
+        return
 
     # ── Dialog / registration flow ──
     state = _get_dialog_state(user)

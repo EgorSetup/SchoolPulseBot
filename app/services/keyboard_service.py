@@ -36,7 +36,7 @@ def _link_button(text: str, url: str) -> dict[str, Any]:
 # ---- Public keyboard presets ---- #
 
 
-def main_menu() -> list[dict[str, Any]]:
+def main_menu(is_admin: bool = False, is_organizer: bool = False) -> list[dict[str, Any]]:
     """
     Main menu shown to every user after registration / /start.
 
@@ -44,8 +44,10 @@ def main_menu() -> list[dict[str, Any]]:
       - Мои уведомления  (callback)
       - Регистрация на событие (callback)
       - Профиль (callback)
+      - [📅 Управление событиями] (only if is_organizer)
+      - [🛠 Админ-панель] (only if is_admin)
     """
-    return _inline_keyboard([
+    rows: list[list[dict[str, Any]]] = [
         [
             _callback_button("📋 Мои уведомления", "my_notifications"),
             _callback_button("📝 Регистрация на событие", "register_event"),
@@ -53,7 +55,16 @@ def main_menu() -> list[dict[str, Any]]:
         [
             _callback_button("👤 Профиль", "profile"),
         ],
-    ])
+    ]
+    if is_organizer:
+        rows.append([
+            _callback_button("📅 Управление событиями", "org_create_event"),
+        ])
+    if is_admin:
+        rows.append([
+            _callback_button("🛠 Админ-панель", "admin_main_menu"),
+        ])
+    return _inline_keyboard(rows)
 
 
 def profile_menu(is_verified: bool, has_school_data: bool) -> list[dict[str, Any]]:

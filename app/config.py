@@ -34,5 +34,8 @@ class Config(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
+    # Admin elevation key
+    admin_key: str = ""
+
 
 config = Config()
