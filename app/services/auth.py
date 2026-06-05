@@ -133,3 +133,34 @@ async def is_ready_school_representative(session: AsyncSession, max_id: int) -> 
         return False
 
     return await has_complete_profile(session, max_id)
+
+
+# ---- Admin specific helpers ---- #
+
+
+async def is_admin(session: AsyncSession, max_id: int) -> bool:
+    """Check whether the user has the admin role."""
+    user = await get_user_by_id(session, max_id)
+    if user is None:
+        return False
+    return user.role == UserRole.admin
+
+
+async def require_admin(
+    session: AsyncSession, max_id: int
+) -> bool:
+    """
+    Strict admin check — returns True only if the user has admin role.
+    Used as a gate before any admin-only operation.
+    """
+    user = await get_user_by_id(session, max_id)
+    if user is None:
+        logger.warning("Admin gate: user %d not found", max_id)
+        return False
+    if user.role != UserRole.admin:
+        logger.warning(
+            "Admin gate: user %d has role %s, expected admin",
+            max_id, user.role.value,
+        )
+        return False
+    return True

@@ -195,3 +195,182 @@ def analytics_menu() -> list[dict[str, Any]]:
             _callback_button("🔙 В меню", "org_main_menu"),
         ],
     ])
+
+
+# ═══════════════════════════════════════════════════════
+#  Admin keyboards
+# ═══════════════════════════════════════════════════════
+
+
+def admin_main_menu() -> list[dict[str, Any]]:
+    """
+    Main menu for Admin users.
+
+    Buttons:
+      - Заявки на верификацию
+      - Управление пользователями
+      - Панель мониторинга
+      - Логи действий
+      - Профиль
+    """
+    return _inline_keyboard([
+        [
+            _callback_button("✅ Заявки на верификацию", "admin_verification:1"),
+            _callback_button("👥 Управление пользователями", "admin_user_mgmt"),
+        ],
+        [
+            _callback_button("📊 Панель мониторинга", "admin_dashboard"),
+            _callback_button("📋 Логи действий", "admin_logs"),
+        ],
+        [
+            _callback_button("👤 Профиль", "profile"),
+        ],
+    ])
+
+
+def admin_verification_keyboard(
+    current_page: int,
+    total_pages: int,
+    user_id: int,
+) -> list[dict[str, Any]]:
+    """
+    Keyboard for a single verification request (approve/reject).
+    """
+    return _inline_keyboard([
+        [
+            _callback_button("✅ Одобрить", f"admin_approve:{user_id}:{current_page}"),
+            _callback_button("❌ Отклонить", f"admin_reject:{user_id}:{current_page}"),
+        ],
+        [
+            _callback_button("🔙 К списку заявок", f"admin_verification:{current_page}"),
+        ],
+        [
+            _callback_button("🏠 Главное меню", "admin_main_menu"),
+        ],
+    ])
+
+
+def admin_verification_list_keyboard(
+    current_page: int,
+    total_pages: int,
+) -> list[dict[str, Any]]:
+    """
+    Pagination keyboard for the verification queue list.
+    Shows page numbers + back to main menu.
+    """
+    rows: list[list[dict[str, Any]]] = []
+
+    # Pagination row
+    page_buttons: list[dict[str, Any]] = []
+    if total_pages > 1:
+        if current_page > 1:
+            page_buttons.append(
+                _callback_button("⬅️", f"admin_verification:{current_page - 1}")
+            )
+        page_buttons.append(
+            _callback_button(f"📄 {current_page}/{total_pages}", "admin_verification:0")
+        )
+        if current_page < total_pages:
+            page_buttons.append(
+                _callback_button("➡️", f"admin_verification:{current_page + 1}")
+            )
+        rows.append(page_buttons)
+
+    rows.append([_callback_button("🏠 Главное меню", "admin_main_menu")])
+    return _inline_keyboard(rows)
+
+
+def admin_user_mgmt_keyboard() -> list[dict[str, Any]]:
+    """User management menu."""
+    return _inline_keyboard([
+        [
+            _callback_button("🔍 Поиск по ID", "admin_search_user"),
+        ],
+        [
+            _callback_button("📋 Все пользователи", "admin_list_users:1"),
+        ],
+        [
+            _callback_button("🔙 Назад", "admin_main_menu"),
+        ],
+    ])
+
+
+def admin_user_role_keyboard(
+    target_max_id: int,
+) -> list[dict[str, Any]]:
+    """Pick a role to assign to a user."""
+    return _inline_keyboard([
+        [
+            _callback_button("👤 School Rep", f"admin_set_role:{target_max_id}:school_representative"),
+            _callback_button("🎫 Organizer", f"admin_set_role:{target_max_id}:organizer"),
+        ],
+        [
+            _callback_button("🛡️ Admin", f"admin_set_role:{target_max_id}:admin"),
+        ],
+        [
+            _callback_button("🔙 Назад", "admin_user_mgmt"),
+        ],
+    ])
+
+
+def admin_users_list_keyboard(
+    users: list[tuple[int, str | None, str]],
+    current_page: int,
+    total_pages: int,
+) -> list[dict[str, Any]]:
+    """
+    Paginated list of users for the admin to pick from.
+    Each user gets a button showing their ID + role.
+    """
+    rows: list[list[dict[str, Any]]] = []
+
+    # First 4 users max per page of buttons (to avoid overflow)
+    for max_id, username, role in users[:4]:
+        label = f"#{max_id}"
+        if username:
+            label += f" {username}"
+        label += f" ({role})"
+        rows.append([
+            _callback_button(label, f"admin_set_role:{max_id}:role_picker"),
+        ])
+
+    # Pagination
+    page_buttons: list[dict[str, Any]] = []
+    if total_pages > 1:
+        if current_page > 1:
+            page_buttons.append(
+                _callback_button("⬅️", f"admin_list_users:{current_page - 1}")
+            )
+        page_buttons.append(_callback_button(f"📄 {current_page}/{total_pages}", "admin_main_menu"))
+        if current_page < total_pages:
+            page_buttons.append(
+                _callback_button("➡️", f"admin_list_users:{current_page + 1}")
+            )
+        rows.append(page_buttons)
+
+    rows.append([_callback_button("🔙 Назад", "admin_user_mgmt")])
+    return _inline_keyboard(rows)
+
+
+def admin_dashboard_keyboard() -> list[dict[str, Any]]:
+    """Dashboard refresh and back buttons."""
+    return _inline_keyboard([
+        [
+            _callback_button("🔄 Обновить", "admin_dashboard"),
+        ],
+        [
+            _callback_button("🏠 Главное меню", "admin_main_menu"),
+        ],
+    ])
+
+
+def admin_logs_keyboard() -> list[dict[str, Any]]:
+    """Back button from logs view."""
+    return _inline_keyboard([
+        [
+            _callback_button("🔄 Обновить", "admin_logs"),
+        ],
+        [
+            _callback_button("🏠 Главное меню", "admin_main_menu"),
+        ],
+    ])

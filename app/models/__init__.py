@@ -1,6 +1,7 @@
 from app.models.user import Base, User, UserRole, SchoolRepresentative, Organizer, Admin
 from app.models.event import Event
 from app.models.notification import Notification, NotificationRecipient, ReadReceipt
+from app.models.admin_log import AdminLog
 
 __all__ = [
     "Base",
@@ -13,4 +14,5 @@ __all__ = [
     "Notification",
     "NotificationRecipient",
     "ReadReceipt",
+    "AdminLog",
 ]

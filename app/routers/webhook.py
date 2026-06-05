@@ -20,6 +20,14 @@ from app.services.auth import (
     resolve_user_role,
 )
 from app.services.keyboard_service import (
+    admin_dashboard_keyboard,
+    admin_logs_keyboard,
+    admin_main_menu,
+    admin_user_mgmt_keyboard,
+    admin_user_role_keyboard,
+    admin_users_list_keyboard,
+    admin_verification_keyboard,
+    admin_verification_list_keyboard,
     analytics_menu,
     broadcast_completed,
     event_actions,
@@ -52,6 +60,16 @@ from app.services.analytics_service import (
     get_analytics_overview,
     get_event_analytics_list,
 )
+from app.services.admin_service import (
+    get_system_dashboard,
+    get_verification_queue,
+    get_admin_logs,
+    search_users,
+    verify_user,
+    reject_user,
+    set_user_role as admin_set_user_role,
+)
+from app.services.auth import require_admin
 from app.services.max_api import (
     send_message,
     answer_callback,
@@ -128,6 +146,13 @@ async def _send_menu(user_id: int, user_role: UserRole | None = None) -> None:
             "📌 *Меню организатора*\n\nВыбери действие:",
             user_id=user_id,
             attachments=organizer_main_menu(),
+            format_="markdown",
+        )
+    elif user_role == UserRole.admin:
+        await send_message(
+            "🛡️ *Административная панель*\n\nВыбери действие:",
+            user_id=user_id,
+            attachments=admin_main_menu(),
             format_="markdown",
         )
     else:
@@ -861,12 +886,49 @@ async def _handle_message_created(
         await _handle_org_event_dialog_step(user, session, text)
         return
 
+    # ── Admin: search user by ID dialog ──
+    if state == "awaiting_admin_user_search":
+        if not await require_admin(session, user.max_id):
+            await send_message("⛔ Доступ запрещён.", user_id=user_id)
+            return
+        _set_dialog_state(user, STATE_NONE)
+
+        if text.isdigit():
+            target_max_id = int(text)
+            # Show the user with role-pick buttons
+            target_user_data, _ = await search_users(session, query=text)
+            if target_user_data:
+                target_u = target_user_data[0]
+                await send_message(
+                    f"👤 *Пользователь #{target_u.max_id}*\n"
+                    f"*Имя:* {target_u.username or '—'}\n"
+                    f"*Роль:* {target_u.role.value}\n"
+                    f"*Статус:* {'✅ Верифицирован' if target_u.is_verified else '⏳ Не верифицирован'}\n\n"
+                    "Выбери действие:",
+                    user_id=user_id,
+                    attachments=admin_user_role_keyboard(target_max_id),
+                    format_="markdown",
+                )
+            else:
+                await send_message(
+                    f"❌ *Пользователь #{target_max_id} не найден.*",
+                    user_id=user_id,
+                    attachments=admin_user_mgmt_keyboard(),
+                )
+        else:
+            await send_message(
+                "❌ *Неверный формат.* Пожалуйста, введи числовой ID пользователя.",
+                user_id=user_id,
+                attachments=admin_user_mgmt_keyboard(),
+            )
+        return
+
     # ── Commands ──
     text_lower = text.lower()
 
     if text_lower in ("/start", "начать", "меню", "главное меню"):
         # Determine role-specific menu
-        menu_role = user.role if user.role in (UserRole.organizer,) else None
+        menu_role = user.role if user.role in (UserRole.organizer, UserRole.admin) else None
         await _send_menu(user_id, user_role=menu_role)
 
     elif text_lower in ("/profile", "профиль", "👤 профиль"):
@@ -897,6 +959,235 @@ async def _handle_message_created(
                 f"✉️ Сообщение получено. Используй /меню для навигации.",
                 user_id=user_id,
             )
+
+
+# ══════════════════════════════════════════════════════
+#  Admin panel handler functions
+# ══════════════════════════════════════════════════════
+
+
+async def _admin_show_verification_queue(
+    user: User,
+    session: AsyncSession,
+    page: int = 1,
+) -> None:
+    """Show the paginated list of unverified users."""
+    PAGE_SIZE = 10
+    users, total = await get_verification_queue(
+        session, page=page, page_size=PAGE_SIZE,
+    )
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+
+    if not users:
+        await send_message(
+            "✅ *Все заявки обработаны!*\n\n"
+            "Нет пользователей, ожидающих верификации.",
+            user_id=user.max_id,
+            attachments=admin_main_menu(),
+            format_="markdown",
+        )
+        return
+
+    lines = [f"📋 *Заявки на верификацию* (стр. {page}/{total_pages})\n"]
+    for u in users:
+        username = u.username or "—"
+        created = u.created_at.strftime("%d.%m.%Y %H:%M")
+        lines.append(
+            f"👤 #{u.max_id} | {username}\n"
+            f"   📅 {created} | {u.role.value}\n"
+        )
+
+    await send_message(
+        "\n".join(lines),
+        user_id=user.max_id,
+        attachments=admin_verification_list_keyboard(page, total_pages),
+        format_="markdown",
+    )
+
+
+async def _admin_show_single_verification(
+    user: User,
+    session: AsyncSession,
+    target_max_id: int,
+    page: int,
+) -> None:
+    """Show a single unverified user with approve/reject buttons."""
+    from app.services.auth import get_user_by_id
+
+    target = await get_user_by_id(session, target_max_id)
+    if target is None:
+        await send_message(
+            "❌ *Пользователь не найден.*",
+            user_id=user.max_id,
+            attachments=admin_main_menu(),
+        )
+        return
+
+    username = target.username or "—"
+    created = target.created_at.strftime("%d.%m.%Y %H:%M")
+    text = (
+        f"👤 *Пользователь #{target.max_id}*\n\n"
+        f"*Имя:* {username}\n"
+        f"*Роль:* {target.role.value}\n"
+        f"*Статус:* ⏳ Ожидает верификации\n"
+        f"*Зарегистрирован:* {created}\n\n"
+        "Одобрить или отклонить заявку?"
+    )
+    await send_message(
+        text,
+        user_id=user.max_id,
+        attachments=admin_verification_keyboard(page, 1, target_max_id),
+        format_="markdown",
+    )
+
+
+async def _admin_approve_user(
+    user: User,
+    session: AsyncSession,
+    target_max_id: int,
+    page: int,
+) -> None:
+    """Approve a user's verification."""
+    updated = await verify_user(
+        session, admin_id=user.max_id, target_max_id=target_max_id,
+    )
+    if updated:
+        await send_message(
+            f"✅ *Пользователь #{target_max_id} верифицирован!*",
+            user_id=user.max_id,
+        )
+    else:
+        await send_message(
+            "❌ *Пользователь не найден.*",
+            user_id=user.max_id,
+        )
+
+    # Return to queue
+    await _admin_show_verification_queue(user, session, page)
+
+
+async def _admin_reject_user(
+    user: User,
+    session: AsyncSession,
+    target_max_id: int,
+    page: int,
+) -> None:
+    """Reject (delete) a user from the system."""
+    success = await reject_user(
+        session, admin_id=user.max_id, target_max_id=target_max_id,
+    )
+    if success:
+        await send_message(
+            f"🗑️ *Пользователь #{target_max_id} отклонён и удалён из системы.*",
+            user_id=user.max_id,
+        )
+    else:
+        await send_message(
+            "❌ *Пользователь не найден.*",
+            user_id=user.max_id,
+        )
+
+    # Return to queue
+    await _admin_show_verification_queue(user, session, page)
+
+
+async def _admin_show_dashboard(
+    user: User,
+    session: AsyncSession,
+) -> None:
+    """Show the global system dashboard."""
+    stats = await get_system_dashboard(session)
+    text = (
+        "📊 *Глобальная панель мониторинга*\n\n"
+        f"👥 *Всего пользователей:* {stats.total_users}\n"
+        f"   ├ ✅ Верифицировано: {stats.total_verified_users}\n"
+        f"   ├ 🎫 Организаторов: {stats.total_organizers}\n"
+        f"   └ 🛡️ Администраторов: {stats.total_admins}\n\n"
+        f"🏫 *Активных школ:* {stats.total_active_schools}\n"
+        f"📅 *Всего событий:* {stats.total_events}\n"
+        f"📆 *Событий за неделю:* {stats.events_this_week}\n"
+    )
+    await send_message(
+        text,
+        user_id=user.max_id,
+        attachments=admin_dashboard_keyboard(),
+        format_="markdown",
+    )
+
+
+async def _admin_show_logs(
+    user: User,
+    session: AsyncSession,
+) -> None:
+    """Show the most recent admin action logs."""
+    logs = await get_admin_logs(session, limit=20)
+    if not logs:
+        await send_message(
+            "📋 *Логи действий*\n\n"
+            "Пока нет записей.",
+            user_id=user.max_id,
+            attachments=admin_logs_keyboard(),
+            format_="markdown",
+        )
+        return
+
+    lines = ["📋 *Последние действия администраторов*\n"]
+    for log in logs:
+        ts = log.created_at.strftime("%d.%m %H:%M")
+        lines.append(
+            f"[{ts}] admin #{log.admin_id}: *{log.action}*"
+            + (f" → {log.target_id}" if log.target_id else "")
+        )
+        if log.details:
+            # Truncate long details
+            detail = log.details[:80] + "…" if len(log.details) > 80 else log.details
+            lines.append(f"   └ {detail}")
+
+    await send_message(
+        "\n".join(lines),
+        user_id=user.max_id,
+        attachments=admin_logs_keyboard(),
+        format_="markdown",
+    )
+
+
+async def _admin_list_users(
+    user: User,
+    session: AsyncSession,
+    page: int = 1,
+) -> None:
+    """Show a paginated list of all users."""
+    PAGE_SIZE = 10
+    users_list, total = await search_users(
+        session, query="", page=page, page_size=PAGE_SIZE,
+    )
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+
+    if not users_list:
+        await send_message(
+            "📋 *В системе пока нет пользователей.*",
+            user_id=user.max_id,
+            attachments=admin_user_mgmt_keyboard(),
+        )
+        return
+
+    lines = [f"👥 *Все пользователи* (стр. {page}/{total_pages}, всего {total})\n"]
+    for u in users_list:
+        username = u.username or "—"
+        verified = "✅" if u.is_verified else "⏳"
+        lines.append(f"{verified} #{u.max_id} | {username} | {u.role.value}")
+
+    # Prepare user tuples for the keyboard
+    user_tuples = [
+        (u.max_id, u.username, u.role.value) for u in users_list[:4]
+    ]
+
+    await send_message(
+        "\n".join(lines),
+        user_id=user.max_id,
+        attachments=admin_users_list_keyboard(user_tuples, page, total_pages),
+        format_="markdown",
+    )
 
 
 # ────────────────────────────────────────────────────
@@ -1026,6 +1317,150 @@ async def _handle_message_callback(
 
     elif payload == "confirm_school":
         await _finalize_school_registration(user, session)
+
+    # ══════════════════════════════════════════════════
+    #  Admin callbacks
+    # ══════════════════════════════════════════════════
+
+    elif payload == "admin_main_menu":
+        if not await require_admin(session, user.max_id):
+            await send_message("⛔ Доступ запрещён. Требуется роль Admin.", user_id=user_id)
+            return
+        await send_message(
+            "🛡️ *Административная панель*\n\nВыбери действие:",
+            user_id=user_id,
+            attachments=admin_main_menu(),
+            format_="markdown",
+        )
+
+    # ── Verification queue ──
+    elif payload.startswith("admin_verification:"):
+        if not await require_admin(session, user.max_id):
+            await send_message("⛔ Доступ запрещён.", user_id=user_id)
+            return
+        parts = payload.split(":", 1)
+        page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+        if page < 1:
+            page = 1
+        await _admin_show_verification_queue(user, session, page)
+
+    # ── Approve user ──
+    elif payload.startswith("admin_approve:"):
+        if not await require_admin(session, user.max_id):
+            await send_message("⛔ Доступ запрещён.", user_id=user_id)
+            return
+        parts = payload.split(":")
+        if len(parts) >= 2:
+            target_id = int(parts[1])
+            page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+            await _admin_approve_user(user, session, target_id, page)
+
+    # ── Reject user ──
+    elif payload.startswith("admin_reject:"):
+        if not await require_admin(session, user.max_id):
+            await send_message("⛔ Доступ запрещён.", user_id=user_id)
+            return
+        parts = payload.split(":")
+        if len(parts) >= 2:
+            target_id = int(parts[1])
+            page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+            await _admin_reject_user(user, session, target_id, page)
+
+    # ── Dashboard ──
+    elif payload == "admin_dashboard":
+        if not await require_admin(session, user.max_id):
+            await send_message("⛔ Доступ запрещён.", user_id=user_id)
+            return
+        await _admin_show_dashboard(user, session)
+
+    # ── Admin logs ──
+    elif payload == "admin_logs":
+        if not await require_admin(session, user.max_id):
+            await send_message("⛔ Доступ запрещён.", user_id=user_id)
+            return
+        await _admin_show_logs(user, session)
+
+    # ── User management menu ──
+    elif payload == "admin_user_mgmt":
+        if not await require_admin(session, user.max_id):
+            await send_message("⛔ Доступ запрещён.", user_id=user_id)
+            return
+        await send_message(
+            "👥 *Управление пользователями*\n\n"
+            "Найди пользователя по ID или просмотри всех.",
+            user_id=user_id,
+            attachments=admin_user_mgmt_keyboard(),
+            format_="markdown",
+        )
+
+    # ── Search user by ID ──
+    elif payload == "admin_search_user":
+        if not await require_admin(session, user.max_id):
+            await send_message("⛔ Доступ запрещён.", user_id=user_id)
+            return
+        _set_dialog_state(user, "awaiting_admin_user_search")
+        await send_message(
+            "🔍 *Поиск пользователя*\n\n"
+            "Введи ID пользователя (число) для поиска:",
+            user_id=user_id,
+            format_="markdown",
+        )
+
+    # ── List all users (paginated) ──
+    elif payload.startswith("admin_list_users:"):
+        if not await require_admin(session, user.max_id):
+            await send_message("⛔ Доступ запрещён.", user_id=user_id)
+            return
+        parts = payload.split(":", 1)
+        page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+        await _admin_list_users(user, session, page)
+
+    # ── Set role (role picker for a user) ──
+    elif payload.startswith("admin_set_role:"):
+        if not await require_admin(session, user.max_id):
+            await send_message("⛔ Доступ запрещён.", user_id=user_id)
+            return
+        parts = payload.split(":")
+        if len(parts) >= 2:
+            target_max_id = int(parts[1])
+            sub_action = parts[2] if len(parts) > 2 else "role_picker"
+            if sub_action == "role_picker":
+                # Show role selection keyboard
+                target_user = await search_users(session, query=str(target_max_id))
+                target_user_obj = target_user[0][0] if target_user[0] else None
+                username_str = target_user_obj.username if target_user_obj else "?"
+                await send_message(
+                    f"👤 *Пользователь #{target_max_id}* ({username_str})\n\n"
+                    "Выбери новую роль:",
+                    user_id=user_id,
+                    attachments=admin_user_role_keyboard(target_max_id),
+                    format_="markdown",
+                )
+            else:
+                # Actually set the role
+                try:
+                    new_role = UserRole(sub_action)
+                except ValueError:
+                    await send_message("❌ *Неизвестная роль.*", user_id=user_id)
+                    return
+                updated = await admin_set_user_role(
+                    session, admin_id=user.max_id,
+                    target_max_id=target_max_id,
+                    new_role=new_role,
+                )
+                if updated:
+                    await send_message(
+                        f"✅ *Роль пользователя #{target_max_id} изменена на* "
+                        f"*{new_role.value}*",
+                        user_id=user_id,
+                        attachments=admin_user_mgmt_keyboard(),
+                        format_="markdown",
+                    )
+                else:
+                    await send_message(
+                        "❌ *Пользователь не найден.*",
+                        user_id=user_id,
+                    )
 
     else:
         logger.debug("Unknown callback payload: %s from user %s", payload, user_id)
