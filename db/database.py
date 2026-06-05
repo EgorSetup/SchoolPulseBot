@@ -3,7 +3,12 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Optional
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.config import config
 
@@ -31,9 +36,9 @@ class Database:
             )
 
     @property
-    def engine(self):
+    def engine(self) -> AsyncEngine:
         self._ensure_engine()
-        return self._engine
+        return self._engine  # type: ignore[return-value]
 
     @property
     def session_factory(self) -> async_sessionmaker[AsyncSession]:

@@ -1204,15 +1204,35 @@ async def _handle_message_callback(
     Always calls answer_callback() first to give instant feedback,
     THEN processes the action.
     """
-    user_id = update["user"]["user_id"]
-    callback_data = update.get("message_callback", {})
-    callback_id: str = callback_data["callback_id"]
+    # Log raw update to debug structure if anything goes wrong
+    logger.debug("Raw message_callback update: %s", update)
+
+    # According to MAX API docs, message_callback has:
+    #   update["callback"]["user"]["user_id"]
+    #   update["callback"]["payload"]
+    #   update["callback"]["callback_id"]
+    callback_data = update.get("callback", {})
+    callback_id: str = callback_data.get("callback_id", "")
     payload: str = callback_data.get("payload", "")
 
-    user, _ = await resolve_user_role(session, user_id)
+    # user_id lives in callback.user.user_id for message_callback
+    user_id = callback_data.get("user", {}).get("user_id")
+
+    if not user_id:
+        # Fallback: try message.recipient.user_id (present in some update types)
+        user_id = update.get("message", {}).get("recipient", {}).get("user_id")
+    if not user_id:
+        # Last resort: try chat_id at root level
+        user_id = update.get("chat_id")
+    if not user_id:
+        logger.error("Cannot extract user_id from callback update: %s", update)
+        return
+
+    user, _ = await resolve_user_role(session, int(user_id))
 
     # ── Answer callback immediately so the MAX UI stops showing a spinner ──
-    await answer_callback(callback_id)
+    if callback_id:
+        await answer_callback(callback_id)
 
     logger.debug("Callback from user %d: %s", user_id, payload)
 

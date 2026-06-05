@@ -20,6 +20,14 @@ from app.config import config
 from app.routers.webhook import router as webhook_router, process_update
 from app.services.webhook import activate_webhook
 
+# Ensure all models are registered with SQLAlchemy metadata.
+# Even though not directly used here, importing __init__ is critical
+# so that Base.metadata.create_all sees every table.
+import app.models  # noqa: F401  — registers all ORM models
+
+from app.models.user import Base
+from db.database import db
+
 logging.basicConfig(
     level=getattr(logging, config.log_level.upper(), logging.INFO),
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
@@ -33,7 +41,19 @@ async def lifespan(app: FastAPI):
     logger.info("SchoolPulseBot starting up...")
     logger.info("MAX API base: %s", config.max_api_base)
     logger.info("Webhook URL:  %s", config.webhook_url)
+
+    # ── Auto-create all tables on startup ──────────────────────────────
+    try:
+        # Ensure engine is initialised before using it
+        _engine = db.engine  # triggers lazy initialisation
+        async with _engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables verified / created successfully.")
+    except Exception:
+        logger.exception("Failed to initialise database tables — app may not work correctly!")
+
     yield
+
     logger.info("SchoolPulseBot shutting down...")
 
 

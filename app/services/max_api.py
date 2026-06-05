@@ -6,6 +6,7 @@ Base URL: https://platform-api.max.ru
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 from typing import Any
 
@@ -141,16 +142,24 @@ async def answer_callback(
 ) -> dict[str, Any]:
     """
     POST /answers — respond to a message_callback event.
+    callback_id передаётся в query-параметре. Тело всегда JSON.
+
+    Если text пустой/None — отправляем {"notification": " "} (пробел),
+    чтобы поле notification было гарантированно заполнено.
     """
-    body: dict[str, Any] = {"callback_id": callback_id}
-    if text is not None:
-        body["text"] = text
+    logger.info("answer_callback called with callback_id=%s, text=%s", callback_id, text)
+
+    params: dict[str, str] = {"callback_id": callback_id}
+    payload = {"notification": text if text else " "}
+
+    logger.info("Sending answer callback payload: %s", json.dumps(payload, ensure_ascii=False))
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{BASE_URL}/answers",
+            params=params,
+            json=payload,
             headers=_headers(),
-            json=body,
         )
         if resp.status_code != 200:
             raise MaxApiError(resp.status_code, resp.text)
