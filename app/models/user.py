@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+if TYPE_CHECKING:
+    from app.models.notification import ReadReceipt
 
 
 class Base(DeclarativeBase):
@@ -47,6 +50,9 @@ class User(Base):
     )
     admin_profile: Mapped[Optional["Admin"]] = relationship(
         "Admin", back_populates="user", uselist=False
+    )
+    read_receipts: Mapped[list["ReadReceipt"]] = relationship(
+        "ReadReceipt", back_populates="user", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

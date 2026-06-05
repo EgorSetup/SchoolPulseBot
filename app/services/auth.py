@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User, UserRole
+from app.services.school_representative_service import has_complete_profile
 
 logger = logging.getLogger(__name__)
 
@@ -74,3 +75,61 @@ async def set_user_role(
 
     logger.info("Updated user max_id=%d role=%s verified=%s", max_id, new_role.value, user.is_verified)
     return user
+
+
+# ---- School_Representative specific helpers ---- #
+
+
+async def is_school_representative(session: AsyncSession, max_id: int) -> bool:
+    """Check whether the user has the school_representative role."""
+    user = await get_user_by_id(session, max_id)
+    if user is None:
+        return False
+    return user.role == UserRole.school_representative
+
+
+async def is_guest_needing_profile(session: AsyncSession, max_id: int) -> bool:
+    """
+    Check if the user is effectively a "guest" who has not yet completed
+    their SchoolRepresentative profile.
+
+    Returns True when:
+      - User role is school_representative AND
+      - is_verified is False AND
+      - school_name in SchoolRepresentative table is not set.
+    This means the user hasn't confirmed their school/class yet.
+    """
+    user = await get_user_by_id(session, max_id)
+    if user is None:
+        return False
+
+    if user.role != UserRole.school_representative:
+        return False
+
+    # If the account is already verified — not a guest
+    if user.is_verified:
+        return False
+
+    # Check if SchoolRepresentative profile has school_name filled
+    has_profile = await has_complete_profile(session, max_id)
+    return not has_profile
+
+
+async def is_ready_school_representative(session: AsyncSession, max_id: int) -> bool:
+    """
+    Check if the user is a fully onboarded School_Representative:
+      - Correct role
+      - Verified account
+      - Has school_name in SchoolRepresentative table
+    """
+    user = await get_user_by_id(session, max_id)
+    if user is None:
+        return False
+
+    if user.role != UserRole.school_representative:
+        return False
+
+    if not user.is_verified:
+        return False
+
+    return await has_complete_profile(session, max_id)
